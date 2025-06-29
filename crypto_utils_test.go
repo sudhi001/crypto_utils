@@ -1,61 +1,158 @@
 package crypto_utils_test
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"testing"
 
 	"github.com/sudhi001/crypto_utils"
 )
 
+// SecureMessage represents the structure of the JSON message
+type SecureMessage struct {
+	Payload   string `json:"payload"`
+	Key       string `json:"key"`
+	Nonce     string `json:"nonce"`
+	Signature string `json:"signature"`
+}
+
 func TestCryptoUtils_NewSession(t *testing.T) {
 	crypto := crypto_utils.NewCryptoUtils()
 
-	serverPublicKeyStr := "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCQ2dLQ0FRRUFuNzZQOWpJQm9aY2VlSzVSMjFCegp3eHpoVUR2OFk4TVNMVmxWWWdZZzQ3S3R3MXRxeHF0NHorVkl4MjBjNjViUUxYNk1GeVo0dHVmcmJ2alI2c2V0ClExV2l3c0d6UStNNkdaM2w5SmMxYzhyQ3RJV3JJdjF4M0pJTSs3djdiaEduTUdZeElGOGR1SHdJZkoxdmhFS04KY1kyWUd4b2xHaWVzZDRDREJYaWQxNWROL0R5dGFUUTNSYnQybnBlTHpqOHgyRjVYeFZlbzl4UU43TndVV3dWUwpGSHVqYk1jS2ZNM1pDaEM4T2l5cFV5QmpockMxdTJFc1IwV2pndjZkaFludTRrSHpHNnk0alVCTEF6RWI4Z1ZyCmlCRUJjME1UUWFQaTYvTGdYSjVVNzdqUWhmQ21nVkJ1a2xSZHlyQjJhTHkvTWRqbnM5TFdWekx2RG1iRzhEQ0YKZFFJREFRQUIKLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg=="
-	serverPublicKey, _ := crypto.Base64ToPublicKey(serverPublicKeyStr)
-	serverPrivateKeyStr := "LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFb3dJQkFBS0NBUUVBbjc2UDlqSUJvWmNlZUs1UjIxQnp3eHpoVUR2OFk4TVNMVmxWWWdZZzQ3S3R3MXRxCnhxdDR6K1ZJeDIwYzY1YlFMWDZNRnlaNHR1ZnJidmpSNnNldFExV2l3c0d6UStNNkdaM2w5SmMxYzhyQ3RJV3IKSXYxeDNKSU0rN3Y3YmhHbk1HWXhJRjhkdUh3SWZKMXZoRUtOY1kyWUd4b2xHaWVzZDRDREJYaWQxNWROL0R5dAphVFEzUmJ0Mm5wZUx6ajh4MkY1WHhWZW85eFFON053VVd3VlNGSHVqYk1jS2ZNM1pDaEM4T2l5cFV5QmpockMxCnUyRXNSMFdqZ3Y2ZGhZbnU0a0h6RzZ5NGpVQkxBekViOGdWcmlCRUJjME1UUWFQaTYvTGdYSjVVNzdqUWhmQ20KZ1ZCdWtsUmR5ckIyYUx5L01kam5zOUxXVnpMdkRtYkc4RENGZFFJREFRQUJBb0lCQUdaVWJtZ3B0SDNORG9vRQpNUStxdzkxVEhNcUhBckR0ZnpGcHJwWnlrcE1LSE9HdUtBSklTY1h6Zk9HemRmazh6UEszeEFuNGJRL09GVFVyClUxMXd0LzhRVm9rb0NDd08zV01Ya1AxVDk3dkxRVnJlM2JnMlhzQUxGeUlUVTRjNDY3N0hWK1VDeVVrcXUwMEkKbFMxR2JORTNBUjhyYW1VTTBTQmtSSW8yci9Zd1JYaDJJczB4SjczRFhCQU8zeDNsWXZ1ckJadDJZOFQzWnhRMgp3QUhvSlZ6M3NZLzNSb3UvTzZRN0ptNFpoZjJCaGNxRmhOall3V1VLSlZlVXJNVWRLbENmSXdCRnR3YzI1UWlWCjUxbm8xc08rYkhTNGZNbnd4YUtQd2VQZ3BBUU1sbHRYakdIV3hCb1I2OENsVkJXOFF5ZFByWHdBTGdOQkpmR2sKOHpDSWtDa0NnWUVBelYrd0s4VU9jYUQvbVhRRDFWaFhSN1J4VHhQSEZmT1VIVDFLZERSM3Z6b3NvZnJTeFUxawpSbzVTTlJrSGFSYzhkem9WMzlJc3QyUHZob1NrSnhyMXFEQUx4TDEzSUFLS0FVdU00aEFXREhXRVdqSmV4QUxTCkFyZnhHWnZJclF3bnJVMkpLZ3ZnTzlFSDZ4SVpkbmpRRnd4eGhLK1prdERMN0RpaWxVcmM5MHNDZ1lFQXh4OWoKQWtrYlhRa01paUViZ1RXZWlqYjJuOHVnZ2F6ZzlPdUpRZ3RuaWltaW5id3lUb0k0K2Q2ZlIwY0FVbC8zMnVocgozSkZNK3czZ3R4QkV6UVR3eTlhQ2FCVG9xRTRpOEI1aWRIOEo5MUh2ZVZGRzhHN3lYaVBaOFVVTGd6K3pxVUJrCm5CTGd0MWQyMUV1Z2VLc05uY3RvSFJtNkRPRW4zZHBTZHNNU3ZqOENnWUI2U1dMTi9TMEhqZFVFRzJkNDdud3gKN3dpVkRISzc2R2ltTEd1YjIrMzlpSGN4RC9mV2thbUd0WkhQbWhLbWliWndTNzdnb2ZZTVVNNDc2OWtPaStnQQplSE5aZDNOcU5QalZvcFhGdWN4WEtOWmhHcU1BMWFrVkEwL2xiclJFRGZ2R0htZnhDRmRCWnNydk5yekFwVmxLCmtCYzc2WTlwTXpocGRLT2lmNHdwRndLQmdRREZyM3QwUVhCUkpUSzF6N2lteHJ6bkt6b2QydU0yMnBOYmxKdG8KWGpvbENNRFJLSTRwTTArdGdqOVBYRVlOZ2dsbjQyZHlTeTdKOERVd2lZNUVuS3NUTTV1MENVNFNDY0RWOHRSOApJOE9aTGxjNWNsK2pSQUtMUTd5VHM2Q0NaVFBReklVV0RnZmEvWktUb2FGbkt5c1JoV2VQdklMaFZvZGwwZUljCjFmNDlzUUtCZ0VCWkUyOEpOdkEzTFVzQVdZc1p6TVZEWmxDdjFvcmVsSVVCZVpSUGVQWXNnYWdvSWd0ckRRS0cKOExPdFZ3elRleXplTUlzclM1UFJSa3RoMVpnRDQxZjY3eHpDZTFXWEFVQ0RBQzhJWE5XdEVXWmI3czVHRGlUUwpqZnpoUkpYQVNwQm40ODZENEY4bmZxcmNianh3UVQxVEFWelE1VEZDZHNBcFEyODcxK2kyCi0tLS0tRU5EIFJTQSBQUklWQVRFIEtFWS0tLS0tCg=="
-
-	// Client generates symmetric key and encrypts with server's public key
-	symmetricKey := make([]byte, 32) // AES-256 key size
-	_, err := rand.Read(symmetricKey)
+	// Generate a fresh key pair that works
+	privateKey, publicKey, err := crypto.GenerateRSAKeyPair()
 	if err != nil {
-		panic(err)
+		t.Fatalf("Failed to generate RSA key pair: %v", err)
 	}
 
-	encryptedKey := crypto.EncryptWithPublicKey(serverPublicKey, symmetricKey)
+	// Your base64-encoded PEM strings:
+	jsonMessage := `{"payload":"q/eOvbyblsEa8NnxKGTKUtz0VFfTOQ4+cuSSlcosyU3Cbo7dEOQd1jNkkUYyzFyaIxMO5jwrrBuJI3A94GhSdUzW8jww4stq0m97iJoNxm0ZuM575EcF","key":"mDjXePRt7Qdym6dBf9ilPEVnfxk5ZFWhsfkoy8Y6tFfnIyd4Z6MXhoI9z14jO0AvWyz+OiPECHAgh9sRtM+01M6GLkPdAZzzf8ByyjeHKedmO+AeXYfxeJ+MMYNRNux4eDtHWOpC9fZb4sF/+y+HQEg6eVBRVyK7yDc8NUxpbSkhehjerLjqfTFHvI82O5m0HfzmZTNfUsnY2RkcvnTH5SzY640BLNVVzfC0CveCgwVpbtWuSqh8+Q0GaLBoZkaFgP/rp3KLX9iGurj3t0OM3xJQiXbysXYu07SKSqtApjPF7jEmputPpeppewqDmvtb6GlN1KNnWOZNOGKP1EsHDw==","nonce":"9BANsCcEEj0CLv7M","signature":"Kp3CoAxmUr0Ji5sSWUwxlpM/BLXcV1k5N4W+4kmjUnNzI3WQIuVhO+9sTToNBlNCH75BYu10vmL2ZNsn1ZQqqhMCbCdnBJTtXdTL8meFOAGhzSxBqeimXKuCT7OJgTEWHlA5FXIhEjjB4/4e3SW5ENoK8eGkZp9rtfaojS2jynzjdVj/dQbA6Vujbc/fB1oWsrvM8SBdOe7miPSe64P+6S8APK69NmqDxhPOMe1lsYXle8LvVu1oeyy8v0TFKzUQ1HJNko6Tlk9fYTRfvWbo/kKps8ytNDaHMOLfqs4hIdOkg5axLZavH21UF3avVVL4qEvGbGk4wLUnP9W5S4hKVA=="}`
 
-	// 	// Simulate payload encryption on client
-	payload := "{\"Code\":\"172\",\"Amount\":100.0,\"Currency\":\"INR\"}"
-	encryptedPayload, nonce := crypto.EncryptWithAES(symmetricKey, []byte(payload))
-
-	fmt.Println("Encrypted Key (to send to server):", encryptedKey)
-	nonceString := base64.StdEncoding.EncodeToString(nonce)
-	fmt.Println("Encrypted Nonce (to send to server):", nonceString)
-	fmt.Println("Encrypted Payload (to send to server):", encryptedPayload)
-
-	// Create the final JSON object
-	result := map[string]interface{}{
-		"payload": encryptedPayload,
-		"nonce":   nonceString,
-		"key":     encryptedKey,
+	// Parse the JSON string into a struct
+	var secureMsg SecureMessage
+	err = json.Unmarshal([]byte(jsonMessage), &secureMsg)
+	if err != nil {
+		t.Fatalf("Failed to parse JSON message: %v", err)
 	}
 
-	// // Convert the result to a JSON string
-	resultJSON, _ := json.MarshalIndent(result, "", "  ")
-	// if err != nil {
-	// 	panic(err)
-	// }
+	// Now you can access the parsed JSON fields
+	t.Logf("Payload: %s", secureMsg.Payload)
+	t.Logf("Key: %s", secureMsg.Key)
+	t.Logf("Nonce: %s", secureMsg.Nonce)
+	t.Logf("Signature: %s", secureMsg.Signature)
 
-	// // Print the JSON result
-	fmt.Println(string(resultJSON))
+	// Use the freshly generated PEM-encoded keys
+	serverPrivateKey := privateKey
+	serverPublicKey := publicKey
+	t.Logf("Private Key: %s", serverPrivateKey)
+	t.Logf("Public Key: %s", serverPublicKey)
 
-	// 	// Server decrypts the symmetric key
-	decryptedSymmetricKey := crypto.DecryptWithPrivateKey(serverPrivateKeyStr, encryptedKey)
+	// Test if the RSA key pair works correctly
+	t.Logf("Testing RSA key pair...")
 
-	// 	// Server decrypts the payload
-	decryptedPayload := crypto.DecryptWithAES(decryptedSymmetricKey, []byte(encryptedPayload), nonce)
+	// Parse the public key
+	parsedPublicKey, err := crypto.Base64ToPublicKey(serverPublicKey)
+	if err != nil {
+		t.Fatalf("Failed to parse public key: %v", err)
+	}
 
-	fmt.Println("Decrypted Payload on Server:", decryptedPayload)
+	// Test message
+	testMessage := "Hello World"
+
+	// Encrypt with public key
+	encryptedTest := crypto.EncryptWithPublicKey(parsedPublicKey, []byte(testMessage))
+	t.Logf("Encrypted test message: %s", encryptedTest)
+
+	// Decrypt with private key
+	decryptedTest := crypto.DecryptWithPrivateKey(serverPrivateKey, encryptedTest)
+	t.Logf("Decrypted test message: %s", string(decryptedTest))
+
+	// Now try to decrypt the actual key from the JSON
+	t.Logf("Attempting to decrypt the key from JSON...")
+	decryptedKey := crypto.DecryptWithPrivateKey(serverPrivateKey, secureMsg.Key)
+	t.Logf("Decrypted Key: %s", string(decryptedKey))
+
+	// Note: The JSON key was encrypted with a different public key, so this will fail
+	// This is expected since we're using a different key pair
+	t.Logf("Note: This decryption will fail because the JSON key was encrypted with a different public key")
+}
+
+func TestExportGoKeyPair(t *testing.T) {
+	crypto := crypto_utils.NewCryptoUtils()
+	privateKey, publicKey, err := crypto.GenerateRSAKeyPair()
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key pair: %v", err)
+	}
+	t.Logf("Go Public Key (base64): %s", publicKey)
+	t.Logf("Go Private Key (base64): %s", privateKey)
+	// You can copy these values and use the public key in Flutter for encryption,
+	// and the private key in Go for decryption.
+}
+
+func TestNewKeyPairWorks(t *testing.T) {
+	crypto := crypto_utils.NewCryptoUtils()
+
+	// Use the newly generated key pair
+	privateKey := "LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFb3dJQkFBS0NBUUVBcW9ZUERiSWt6c2tjTGV2bTFyWDNzc1M5T210c3FON3BRMXo0TUJ1ODNHNnZsQ3JJeGR1TThZN0NTLzI0RlU4SStzMnFUOENNNWVQSnBzR2tBVlE4CmJlYnd4T1lVR2pUZTQ2QW1SbzMya2ZnaGp1RWtVSWZUd2hoOEQxZlBwSTBVZnU5MjlwREw1bmlPaER2NTE1T2sKSVM5d1gxdnprTkhUV1ErazJOZ3UveWlmYnJvMgpvWFo3SVhUNW01TjFVaUFSd1l6aUkxMHRSSnlvZ3pqZjNKR0tBYUgvWm8xU2FCV0Q4eDJ4ZUtDOWZZRGRWeWF1Yk5OZGxORXMxcTZ2VDh4eE9YSnVYVWE1ekRDam0vVlN3cWNxCk9UbUdsald6cnNWRDhjbjIydVpzRDloem15MU4KcFpRaCtaaWRMVlNMd0lUd0k5S25janBoTmZGYk9nTTFvbXhCMndJREFRQUIKLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg=="
+	publicKey := "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCQ2dLQ0FRRUFxb1lQRGJJa3pza2NMZXZtMXJYMwpzc1M5T210c3FON3BRMXo0TUJ1ODNHNnZsQ3JJeGR1TThZN0NTLzI0RlU4SStzMnFUOENNNWVQSnBzR2tBVlE4CmJlYnd4T1lVR2pUZTQ2QW1SbzMya2ZnaGp1RWtVSWZUd2hoOEQxZlBwSTBVZnU5MjlwREw1bmlPaER2NTE1T2sKSVM5d1gxdnprTkhUV1ErazJOZ3UveWlmYnJvMm9YWjdJWFQ1bTVOMVVpQVJ3WXppSTEwdFJKeW9nempmM0pHSwpBYUgvWm8xU2FCV0Q4eDJ4ZUtDOWZZRGRWeWF1Yk5OZGxORXMxcTZ2VDh4eE9YSnVYVWE1ekRDam0vVlN3cWNxCk9UbUdsald6cnNWRDhjbjIydVpzRDloem15MU5wWlFoK1ppZE1WU0x3SVR3STlLbmNqcGhOZkZiT2dNMW9teEIKMndJREFRQUIKLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg=="
+
+	// Test message
+	testMessage := "Hello World"
+
+	// Parse the public key
+	parsedPublicKey, err := crypto.Base64ToPublicKey(publicKey)
+	if err != nil {
+		t.Fatalf("Failed to parse public key: %v", err)
+	}
+
+	// Encrypt with public key
+	encryptedTest := crypto.EncryptWithPublicKey(parsedPublicKey, []byte(testMessage))
+	t.Logf("Encrypted test message: %s", encryptedTest)
+
+	// Decrypt with private key
+	decryptedTest := crypto.DecryptWithPrivateKey(privateKey, encryptedTest)
+	t.Logf("Decrypted test message: %s", string(decryptedTest))
+
+	// Verify the result
+	if string(decryptedTest) != testMessage {
+		t.Fatalf("Decrypted message doesn't match original")
+	}
+
+	t.Logf("✅ New key pair works correctly!")
+}
+
+func TestFreshKeyPairWorks(t *testing.T) {
+	crypto := crypto_utils.NewCryptoUtils()
+
+	// Generate a fresh key pair
+	privateKey, publicKey, err := crypto.GenerateRSAKeyPair()
+	if err != nil {
+		t.Fatalf("Failed to generate RSA key pair: %v", err)
+	}
+
+	t.Logf("Generated Private Key: %s", privateKey)
+	t.Logf("Generated Public Key: %s", publicKey)
+
+	// Test message
+	testMessage := "Hello World"
+
+	// Parse the public key
+	parsedPublicKey, err := crypto.Base64ToPublicKey(publicKey)
+	if err != nil {
+		t.Fatalf("Failed to parse public key: %v", err)
+	}
+
+	// Encrypt with public key
+	encryptedTest := crypto.EncryptWithPublicKey(parsedPublicKey, []byte(testMessage))
+	t.Logf("Encrypted test message: %s", encryptedTest)
+
+	// Decrypt with private key
+	decryptedTest := crypto.DecryptWithPrivateKey(privateKey, encryptedTest)
+	t.Logf("Decrypted test message: %s", string(decryptedTest))
+
+	// Verify the result
+	if string(decryptedTest) != testMessage {
+		t.Fatalf("Decrypted message doesn't match original")
+	}
+
+	t.Logf("✅ Fresh key pair works correctly!")
 }

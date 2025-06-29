@@ -127,3 +127,39 @@ Decrypts an AES-GCM-encrypted ciphertext using the provided key and nonce. Retur
 
 This package is licensed under the MIT License. See `LICENSE` for more information.
 
+
+
+package crypto_utils_test
+
+import (
+	"encoding/base64"
+	"fmt"
+	"testing"
+
+	"github.com/sudhi001/crypto_utils"
+)
+
+func TestCryptoUtils_NewSession(t *testing.T) {
+	crypto := crypto_utils.NewCryptoUtils()
+	// Provided test vectors
+	keyB64 := "NwUqUByc21I71POTifDQ1OPjhwBIFNd1Q2wodYbxOkE="
+	nonceB64 := "/jy/osqLyF8pgnI8"
+	ciphertextB64 := "AHlo1s9rKPRSL3qTv9LqN+giCtQ9"
+
+	key, err := base64.StdEncoding.DecodeString(keyB64)
+	if err != nil {
+		t.Fatalf("Failed to decode key: %v", err)
+	}
+	nonce, err := base64.StdEncoding.DecodeString(nonceB64)
+	if err != nil {
+		t.Fatalf("Failed to decode nonce: %v", err)
+	}
+
+
+	// Decrypt
+	plaintext := crypto.DecryptWithAES(key, []byte(ciphertextB64), nonce)
+	if plaintext == "" {
+		t.Errorf("Decryption failed, got empty string")
+	}
+	fmt.Printf("Decrypted message: %s\n", plaintext)
+}

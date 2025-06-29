@@ -1,10 +1,12 @@
 package crypto_utils
 
 import (
+	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -29,10 +31,15 @@ func (c *CryptoUtils) GenerateRSAKeyPair() (string, string, error) {
 		return "", "", err
 	}
 
-	// Convert the private key to PEM format
+	// Convert the private key to PKCS#8 PEM format (modern standard)
+	privateKeyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		return "", "", err
+	}
+
 	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY",
-		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
+		Type:  "PRIVATE KEY", // PKCS#8 format (modern, generic)
+		Bytes: privateKeyBytes,
 	})
 
 	// Convert the public key to PKIX format
@@ -43,7 +50,7 @@ func (c *CryptoUtils) GenerateRSAKeyPair() (string, string, error) {
 
 	// Convert the public key to PEM format
 	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
+		Type:  "PUBLIC KEY", // PKIX format (modern, generic)
 		Bytes: publicKeyBytes,
 	})
 
@@ -113,8 +120,14 @@ func (c *CryptoUtils) Base64ToPublicKey(base64PublicKey string) (*rsa.PublicKey,
 	return publicKey, nil
 }
 func (c *CryptoUtils) DecryptWithPrivateKey(privateKeyString string, encryptedMessage string) []byte {
-	privateKey, _ := c.Base64ToPrivateKey(privateKeyString)
+	privateKey, err := c.Base64ToPrivateKey(privateKeyString)
+	if err != nil {
+		fmt.Println("Error: Failed to parse private key from base 64 string:", err)
+		panic(err)
+	}
+	fmt.Println("Private Key Parsed successfully")
 	encryptedBytes, _ := base64.StdEncoding.DecodeString(encryptedMessage)
+	fmt.Println("Message decoded successfully")
 	decryptedBytes, err := rsa.DecryptPKCS1v15(rand.Reader, privateKey, encryptedBytes)
 	if err != nil {
 		panic(err)
@@ -156,4 +169,40 @@ func (c *CryptoUtils) DecryptWithAES(key, ciphertext, nonce []byte) string {
 		panic(err)
 	}
 	return string(plaintext)
+}
+
+// SignWithPrivateKey signs the message using the private key (encrypt with private key)
+func (c *CryptoUtils) SignWithPrivateKey(privateKeyString string, message []byte) string {
+	privateKey, err := c.Base64ToPrivateKey(privateKeyString)
+	if err != nil {
+		panic(err)
+	}
+	hashed := sha256Sum(message)
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed)
+	if err != nil {
+		panic(err)
+	}
+	return base64.StdEncoding.EncodeToString(signature)
+}
+
+// VerifyWithPublicKey verifies the signature using the public key (decrypt with public key)
+func (c *CryptoUtils) VerifyWithPublicKey(publicKeyString string, message []byte, base64Signature string) bool {
+	publicKey, err := c.Base64ToPublicKey(publicKeyString)
+	if err != nil {
+		panic(err)
+	}
+	signature, err := base64.StdEncoding.DecodeString(base64Signature)
+	if err != nil {
+		panic(err)
+	}
+	hashed := sha256Sum(message)
+	err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed, signature)
+	return err == nil
+}
+
+// helper function to calculate SHA256 hash
+func sha256Sum(message []byte) []byte {
+	hash := sha256.New()
+	hash.Write(message)
+	return hash.Sum(nil)
 }
