@@ -89,7 +89,10 @@ func TestRSAEncryptWithPublicKeyAndDecryptWithPrivateKey(t *testing.T) {
 	t.Logf("Encrypted message (Base64): %s", encryptedMessage)
 
 	// Decrypt with private key
-	decrypted := crypto.DecryptWithPrivateKey(privateKey, encryptedMessage)
+	decrypted, err := crypto.DecryptWithPrivateKey(privateKey, encryptedMessage)
+	if err != nil {
+		t.Fatalf("Failed to decrypt with private key: %v", err)
+	}
 	decryptedText := string(decrypted)
 	t.Logf("Decrypted message: %s", decryptedText)
 
@@ -191,7 +194,10 @@ func TestFreshKeyPairWorks(t *testing.T) {
 	t.Logf("Encrypted test message: %s", encryptedTest)
 
 	// Decrypt with private key
-	decryptedTest := crypto.DecryptWithPrivateKey(privateKey, encryptedTest)
+	decryptedTest, err := crypto.DecryptWithPrivateKey(privateKey, encryptedTest)
+	if err != nil {
+		t.Fatalf("Failed to decrypt with private key: %v", err)
+	}
 	t.Logf("Decrypted test message: %s", string(decryptedTest))
 
 	// Verify the result

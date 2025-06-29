@@ -116,20 +116,30 @@ func (c *CryptoUtils) Base64ToPublicKey(base64PublicKey string) (*rsa.PublicKey,
 
 	return publicKey, nil
 }
-func (c *CryptoUtils) DecryptWithPrivateKey(privateKeyString string, encryptedMessage string) []byte {
+func (c *CryptoUtils) DecryptWithPrivateKey(privateKeyString string, encryptedMessage string) ([]byte, error) {
 	privateKey, err := c.Base64ToPrivateKey(privateKeyString)
 	if err != nil {
-		fmt.Println("Error: Failed to parse private key from base 64 string:", err)
-		panic(err)
+		return nil, fmt.Errorf("failed to parse private key from base64 string: %w", err)
 	}
 	fmt.Println("Private Key Parsed successfully")
-	encryptedBytes, _ := base64.StdEncoding.DecodeString(encryptedMessage)
-	fmt.Println("Message decoded successfully")
+
+	encryptedBytes, err := base64.StdEncoding.DecodeString(encryptedMessage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode encrypted message from base64: %w", err)
+	}
+	fmt.Printf("Message decoded successfully, encrypted bytes length: %d\n", len(encryptedBytes))
+
+	// Add debugging info about the private key
+	fmt.Printf("Private key modulus length: %d bits\n", privateKey.N.BitLen())
+	fmt.Printf("Private key public exponent: %d\n", privateKey.PublicKey.E)
+
 	decryptedBytes, err := rsa.DecryptPKCS1v15(rand.Reader, privateKey, encryptedBytes)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("RSA decryption failed: %w", err)
 	}
-	return decryptedBytes
+
+	fmt.Printf("RSA decryption successful, decrypted bytes length: %d\n", len(decryptedBytes))
+	return decryptedBytes, nil
 }
 
 func (c *CryptoUtils) EncryptWithAES(key, plaintext []byte) (ciphertext string, nonce []byte) {
