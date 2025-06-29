@@ -142,7 +142,7 @@ func TestAESDecryptionFailureWithWrongKey(t *testing.T) {
 	}
 
 	// Generate wrong AES key
-	wrongKey, err := generateRandomBytes(32)
+	wrongKey, err := crypto.GenerateRandomBytes(32)
 	if err != nil {
 		t.Fatalf("Failed to generate random wrong AES key: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestFreshKeyPairWorks(t *testing.T) {
 	crypto := crypto_utils.NewCryptoUtils()
 
 	// Generate compatible key pair
-	privateKey, publicKey, err := createCompatiblePrivateKey()
+	privateKey, publicKey, err := crypto.GenerateRSAKeyPair()
 	if err != nil {
 		t.Fatalf("Failed to generate compatible RSA key pair: %v", err)
 	}
@@ -203,7 +203,8 @@ func TestFreshKeyPairWorks(t *testing.T) {
 }
 
 func TestExportGoKeyPair(t *testing.T) {
-	privateKey, publicKey, err := createCompatiblePrivateKey()
+	crypto := crypto_utils.NewCryptoUtils()
+	privateKey, publicKey, err := crypto.GenerateRSAKeyPair()
 	if err != nil {
 		t.Fatalf("Failed to generate compatible RSA key pair: %v", err)
 	}
