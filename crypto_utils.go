@@ -24,40 +24,37 @@ func NewCryptoUtils() *CryptoUtils {
 	return &CryptoUtils{}
 
 }
+func (c *CryptoUtils) GenerateRandomBytes(size int) ([]byte, error) {
+	bytes := make([]byte, size)
+	_, err := rand.Read(bytes)
+	return bytes, err
+}
 func (c *CryptoUtils) GenerateRSAKeyPair() (string, string, error) {
-	// Generate the RSA private key
+	// Generate RSA key pair
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return "", "", err
 	}
 
-	// Convert the private key to PKCS#8 PEM format (modern standard)
-	privateKeyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		return "", "", err
-	}
-
+	// Convert to PKCS#1 format (what the package expects)
+	privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
 	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PRIVATE KEY", // PKCS#8 format (modern, generic)
+		Type:  "RSA PRIVATE KEY", // PKCS#1 format
 		Bytes: privateKeyBytes,
 	})
 
-	// Convert the public key to PKIX format
+	// Convert public key to PKIX format
 	publicKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
 	if err != nil {
 		return "", "", err
 	}
 
-	// Convert the public key to PEM format
 	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY", // PKIX format (modern, generic)
+		Type:  "PUBLIC KEY",
 		Bytes: publicKeyBytes,
 	})
 
-	privateKeyPEMString := base64.StdEncoding.EncodeToString(privateKeyPEM)
-	publicKeyPEMString := base64.StdEncoding.EncodeToString(publicKeyPEM)
-	// Return the PEM-encoded private and public keys as strings
-	return privateKeyPEMString, publicKeyPEMString, nil
+	return base64.StdEncoding.EncodeToString(privateKeyPEM), base64.StdEncoding.EncodeToString(publicKeyPEM), nil
 }
 
 func (c *CryptoUtils) EncryptWithPublicKey(publicKey *rsa.PublicKey, message []byte) string {
