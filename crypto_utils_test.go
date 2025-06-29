@@ -1,7 +1,7 @@
 package crypto_utils_test
 
 import (
-	"encoding/json"
+	"encoding/base64"
 	"testing"
 
 	"github.com/sudhi001/crypto_utils"
@@ -15,88 +15,68 @@ type SecureMessage struct {
 	Signature string `json:"signature"`
 }
 
-func TestCryptoUtils_NewSession(t *testing.T) {
+func TestGenerateAESWithSignature(t *testing.T) {
 	crypto := crypto_utils.NewCryptoUtils()
 
-	// Generate a fresh key pair that works
+	// Generate compatible key pair
 	privateKey, publicKey, err := crypto.GenerateRSAKeyPair()
 	if err != nil {
-		t.Fatalf("Failed to generate RSA key pair: %v", err)
+		t.Fatalf("Failed to generate compatible RSA key pair: %v", err)
 	}
 
-	// Your base64-encoded PEM strings:
-	jsonMessage := `{"payload":"q/eOvbyblsEa8NnxKGTKUtz0VFfTOQ4+cuSSlcosyU3Cbo7dEOQd1jNkkUYyzFyaIxMO5jwrrBuJI3A94GhSdUzW8jww4stq0m97iJoNxm0ZuM575EcF","key":"mDjXePRt7Qdym6dBf9ilPEVnfxk5ZFWhsfkoy8Y6tFfnIyd4Z6MXhoI9z14jO0AvWyz+OiPECHAgh9sRtM+01M6GLkPdAZzzf8ByyjeHKedmO+AeXYfxeJ+MMYNRNux4eDtHWOpC9fZb4sF/+y+HQEg6eVBRVyK7yDc8NUxpbSkhehjerLjqfTFHvI82O5m0HfzmZTNfUsnY2RkcvnTH5SzY640BLNVVzfC0CveCgwVpbtWuSqh8+Q0GaLBoZkaFgP/rp3KLX9iGurj3t0OM3xJQiXbysXYu07SKSqtApjPF7jEmputPpeppewqDmvtb6GlN1KNnWOZNOGKP1EsHDw==","nonce":"9BANsCcEEj0CLv7M","signature":"Kp3CoAxmUr0Ji5sSWUwxlpM/BLXcV1k5N4W+4kmjUnNzI3WQIuVhO+9sTToNBlNCH75BYu10vmL2ZNsn1ZQqqhMCbCdnBJTtXdTL8meFOAGhzSxBqeimXKuCT7OJgTEWHlA5FXIhEjjB4/4e3SW5ENoK8eGkZp9rtfaojS2jynzjdVj/dQbA6Vujbc/fB1oWsrvM8SBdOe7miPSe64P+6S8APK69NmqDxhPOMe1lsYXle8LvVu1oeyy8v0TFKzUQ1HJNko6Tlk9fYTRfvWbo/kKps8ytNDaHMOLfqs4hIdOkg5axLZavH21UF3avVVL4qEvGbGk4wLUnP9W5S4hKVA=="}`
+	// Test data - same as Flutter test
+	plaintext := `{"Code":"172","Amount":100.0,"Currency":"INR"}`
 
-	// Parse the JSON string into a struct
-	var secureMsg SecureMessage
-	err = json.Unmarshal([]byte(jsonMessage), &secureMsg)
+	// Generate random AES key (32 bytes = 256 bits)
+	aesKey, err := crypto.GenerateRandomBytes(32)
 	if err != nil {
-		t.Fatalf("Failed to parse JSON message: %v", err)
+		t.Fatalf("Failed to generate random AES key: %v", err)
 	}
 
-	// Now you can access the parsed JSON fields
-	t.Logf("Payload: %s", secureMsg.Payload)
-	t.Logf("Key: %s", secureMsg.Key)
-	t.Logf("Nonce: %s", secureMsg.Nonce)
-	t.Logf("Signature: %s", secureMsg.Signature)
+	// Encrypt with AES
+	encryptedAES, nonce := crypto.EncryptWithAES(aesKey, []byte(plaintext))
+	t.Logf("Encrypted AES: %s", encryptedAES)
+	t.Logf("Nonce: %s", base64.StdEncoding.EncodeToString(nonce))
 
-	// Use the freshly generated PEM-encoded keys
-	serverPrivateKey := privateKey
-	serverPublicKey := publicKey
-	t.Logf("Private Key: %s", serverPrivateKey)
-	t.Logf("Public Key: %s", serverPublicKey)
+	// Generate signature using private key
+	signature := crypto.SignWithPrivateKey(privateKey, []byte(encryptedAES))
+	t.Logf("Signature AES: %s", signature)
 
-	// Test if the RSA key pair works correctly
-	t.Logf("Testing RSA key pair...")
+	// Decrypt with AES
+	decryptedAES := crypto.DecryptWithAES(aesKey, []byte(encryptedAES), nonce)
+	t.Logf("Decrypted AES: %s", decryptedAES)
 
-	// Parse the public key
-	parsedPublicKey, err := crypto.Base64ToPublicKey(serverPublicKey)
-	if err != nil {
-		t.Fatalf("Failed to parse public key: %v", err)
+	// Verify the decrypted message matches the original plaintext
+	if decryptedAES != plaintext {
+		t.Fatalf("Decrypted message doesn't match original. Expected: %s, Got: %s", plaintext, decryptedAES)
 	}
 
-	// Test message
-	testMessage := "Hello World"
+	// Verify signature with public key
+	isVerified := crypto.VerifyWithPublicKey(publicKey, []byte(encryptedAES), signature)
+	if !isVerified {
+		t.Fatalf("Signature verification failed")
+	}
 
-	// Encrypt with public key
-	encryptedTest := crypto.EncryptWithPublicKey(parsedPublicKey, []byte(testMessage))
-	t.Logf("Encrypted test message: %s", encryptedTest)
-
-	// Decrypt with private key
-	decryptedTest := crypto.DecryptWithPrivateKey(serverPrivateKey, encryptedTest)
-	t.Logf("Decrypted test message: %s", string(decryptedTest))
-
-	// Now try to decrypt the actual key from the JSON
-	t.Logf("Attempting to decrypt the key from JSON...")
-	decryptedKey := crypto.DecryptWithPrivateKey(serverPrivateKey, secureMsg.Key)
-	t.Logf("Decrypted Key: %s", string(decryptedKey))
-
-	// Note: The JSON key was encrypted with a different public key, so this will fail
-	// This is expected since we're using a different key pair
-	t.Logf("Note: This decryption will fail because the JSON key was encrypted with a different public key")
+	t.Logf("✅ Test passes since the decrypted message matches the original plaintext")
 }
 
-func TestExportGoKeyPair(t *testing.T) {
+func TestRSAEncryptWithPublicKeyAndDecryptWithPrivateKey(t *testing.T) {
 	crypto := crypto_utils.NewCryptoUtils()
+
+	// Generate compatible key pair
 	privateKey, publicKey, err := crypto.GenerateRSAKeyPair()
 	if err != nil {
-		t.Fatalf("Failed to generate RSA key pair: %v", err)
+		t.Fatalf("Failed to generate compatible RSA key pair: %v", err)
 	}
-	t.Logf("Go Public Key (base64): %s", publicKey)
-	t.Logf("Go Private Key (base64): %s", privateKey)
-	// You can copy these values and use the public key in Flutter for encryption,
-	// and the private key in Go for decryption.
-}
 
-func TestNewKeyPairWorks(t *testing.T) {
-	crypto := crypto_utils.NewCryptoUtils()
+	// Generate random symmetric key (same as Flutter test)
+	symmetricKey, err := crypto.GenerateRandomBytes(32)
+	if err != nil {
+		t.Fatalf("Failed to generate random symmetric key: %v", err)
+	}
 
-	// Use the newly generated key pair
-	privateKey := "LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFb3dJQkFBS0NBUUVBcW9ZUERiSWt6c2tjTGV2bTFyWDNzc1M5T210c3FON3BRMXo0TUJ1ODNHNnZsQ3JJeGR1TThZN0NTLzI0RlU4SStzMnFUOENNNWVQSnBzR2tBVlE4CmJlYnd4T1lVR2pUZTQ2QW1SbzMya2ZnaGp1RWtVSWZUd2hoOEQxZlBwSTBVZnU5MjlwREw1bmlPaER2NTE1T2sKSVM5d1gxdnprTkhUV1ErazJOZ3UveWlmYnJvMgpvWFo3SVhUNW01TjFVaUFSd1l6aUkxMHRSSnlvZ3pqZjNKR0tBYUgvWm8xU2FCV0Q4eDJ4ZUtDOWZZRGRWeWF1Yk5OZGxORXMxcTZ2VDh4eE9YSnVYVWE1ekRDam0vVlN3cWNxCk9UbUdsald6cnNWRDhjbjIydVpzRDloem15MU4KcFpRaCtaaWRMVlNMd0lUd0k5S25janBoTmZGYk9nTTFvbXhCMndJREFRQUIKLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg=="
-	publicKey := "LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQklqQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FROEFNSUlCQ2dLQ0FRRUFxb1lQRGJJa3pza2NMZXZtMXJYMwpzc1M5T210c3FON3BRMXo0TUJ1ODNHNnZsQ3JJeGR1TThZN0NTLzI0RlU4SStzMnFUOENNNWVQSnBzR2tBVlE4CmJlYnd4T1lVR2pUZTQ2QW1SbzMya2ZnaGp1RWtVSWZUd2hoOEQxZlBwSTBVZnU5MjlwREw1bmlPaER2NTE1T2sKSVM5d1gxdnprTkhUV1ErazJOZ3UveWlmYnJvMm9YWjdJWFQ1bTVOMVVpQVJ3WXppSTEwdFJKeW9nempmM0pHSwpBYUgvWm8xU2FCV0Q4eDJ4ZUtDOWZZRGRWeWF1Yk5OZGxORXMxcTZ2VDh4eE9YSnVYVWE1ekRDam0vVlN3cWNxCk9UbUdsald6cnNWRDhjbjIydVpzRDloem15MU5wWlFoK1ppZE1WU0x3SVR3STlLbmNqcGhOZkZiT2dNMW9teEIKMndJREFRQUIKLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg=="
-
-	// Test message
-	testMessage := "Hello World"
+	plaintext := base64.StdEncoding.EncodeToString(symmetricKey)
+	t.Logf("Key for encryption: %s", plaintext)
 
 	// Parse the public key
 	parsedPublicKey, err := crypto.Base64ToPublicKey(publicKey)
@@ -105,28 +85,93 @@ func TestNewKeyPairWorks(t *testing.T) {
 	}
 
 	// Encrypt with public key
-	encryptedTest := crypto.EncryptWithPublicKey(parsedPublicKey, []byte(testMessage))
-	t.Logf("Encrypted test message: %s", encryptedTest)
+	encryptedMessage := crypto.EncryptWithPublicKey(parsedPublicKey, []byte(plaintext))
+	t.Logf("Encrypted message (Base64): %s", encryptedMessage)
 
 	// Decrypt with private key
-	decryptedTest := crypto.DecryptWithPrivateKey(privateKey, encryptedTest)
-	t.Logf("Decrypted test message: %s", string(decryptedTest))
+	decrypted := crypto.DecryptWithPrivateKey(privateKey, encryptedMessage)
+	decryptedText := string(decrypted)
+	t.Logf("Decrypted message: %s", decryptedText)
 
-	// Verify the result
-	if string(decryptedTest) != testMessage {
-		t.Fatalf("Decrypted message doesn't match original")
+	// Verify the decrypted message matches the original plaintext
+	if decryptedText != plaintext {
+		t.Fatalf("Decrypted message doesn't match original. Expected: %s, Got: %s", plaintext, decryptedText)
 	}
 
-	t.Logf("✅ New key pair works correctly!")
+	t.Logf("✅ Test passes since the decrypted message matches the original plaintext")
+}
+
+func TestAESEncryptionAndDecryption(t *testing.T) {
+	crypto := crypto_utils.NewCryptoUtils()
+
+	// Test data - same as Flutter test
+	plaintext := `{"Code":"172","Amount":100.0,"Currency":"INR"}`
+
+	// Generate random AES key (32 bytes = 256 bits)
+	aesKey, err := crypto.GenerateRandomBytes(32)
+	if err != nil {
+		t.Fatalf("Failed to generate random AES key: %v", err)
+	}
+
+	// Encrypt with AES
+	encryptedAES, nonce := crypto.EncryptWithAES(aesKey, []byte(plaintext))
+	t.Logf("Encrypted AES: %s", encryptedAES)
+
+	// Decrypt with AES
+	decryptedAES := crypto.DecryptWithAES(aesKey, []byte(encryptedAES), nonce)
+	t.Logf("Decrypted AES: %s", decryptedAES)
+
+	// Verify the decrypted message matches the original plaintext
+	if decryptedAES != plaintext {
+		t.Fatalf("Decrypted message doesn't match original. Expected: %s, Got: %s", plaintext, decryptedAES)
+	}
+
+	t.Logf("✅ Test passes since the decrypted message matches the original plaintext")
+}
+
+func TestAESDecryptionFailureWithWrongKey(t *testing.T) {
+	crypto := crypto_utils.NewCryptoUtils()
+
+	// Test data - same as Flutter test
+	plaintext := `{"Code":"172","Amount":100.0,"Currency":"INR"}`
+
+	// Generate correct AES key
+	correctKey, err := crypto.GenerateRandomBytes(32)
+	if err != nil {
+		t.Fatalf("Failed to generate random AES key: %v", err)
+	}
+
+	// Generate wrong AES key
+	wrongKey, err := generateRandomBytes(32)
+	if err != nil {
+		t.Fatalf("Failed to generate random wrong AES key: %v", err)
+	}
+
+	// Encrypt with AES using the correct key
+	encryptedAES, nonce := crypto.EncryptWithAES(correctKey, []byte(plaintext))
+	t.Logf("Encrypted AES: %s", encryptedAES)
+
+	// Try to decrypt with a wrong key and ensure it fails
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatalf("Decryption should fail with the wrong key")
+		} else {
+			t.Logf("Decryption failed as expected with wrong key: %v", r)
+			t.Logf("✅ Test passes since decryption failed with wrong key")
+		}
+	}()
+
+	// This should panic due to wrong key
+	_ = crypto.DecryptWithAES(wrongKey, []byte(encryptedAES), nonce)
 }
 
 func TestFreshKeyPairWorks(t *testing.T) {
 	crypto := crypto_utils.NewCryptoUtils()
 
-	// Generate a fresh key pair
-	privateKey, publicKey, err := crypto.GenerateRSAKeyPair()
+	// Generate compatible key pair
+	privateKey, publicKey, err := createCompatiblePrivateKey()
 	if err != nil {
-		t.Fatalf("Failed to generate RSA key pair: %v", err)
+		t.Fatalf("Failed to generate compatible RSA key pair: %v", err)
 	}
 
 	t.Logf("Generated Private Key: %s", privateKey)
@@ -155,4 +200,15 @@ func TestFreshKeyPairWorks(t *testing.T) {
 	}
 
 	t.Logf("✅ Fresh key pair works correctly!")
+}
+
+func TestExportGoKeyPair(t *testing.T) {
+	privateKey, publicKey, err := createCompatiblePrivateKey()
+	if err != nil {
+		t.Fatalf("Failed to generate compatible RSA key pair: %v", err)
+	}
+	t.Logf("Go Public Key (base64): %s", publicKey)
+	t.Logf("Go Private Key (base64): %s", privateKey)
+	// You can copy these values and use the public key in Flutter for encryption,
+	// and the private key in Go for decryption.
 }
