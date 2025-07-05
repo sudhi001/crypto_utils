@@ -213,3 +213,30 @@ func sha256Sum(message []byte) []byte {
 	hash.Write(message)
 	return hash.Sum(nil)
 }
+
+func (c *CryptoUtils) DecryptWithPrivateKeyOAEP(privateKeyString string, encryptedMessage string) ([]byte, error) {
+	privateKey, err := c.Base64ToPrivateKey(privateKeyString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse private key from base64 string: %w", err)
+	}
+	fmt.Println("Private Key Parsed successfully")
+
+	encryptedBytes, err := base64.StdEncoding.DecodeString(encryptedMessage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode encrypted message from base64: %w", err)
+	}
+	fmt.Printf("Message decoded successfully, encrypted bytes length: %d\n", len(encryptedBytes))
+
+	// Add debugging info about the private key
+	fmt.Printf("Private key modulus length: %d bits\n", privateKey.N.BitLen())
+	fmt.Printf("Private key public exponent: %d\n", privateKey.PublicKey.E)
+
+	// Try OAEP decryption instead of PKCS1v15
+	decryptedBytes, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, encryptedBytes, nil)
+	if err != nil {
+		return nil, fmt.Errorf("RSA OAEP decryption failed: %w", err)
+	}
+
+	fmt.Printf("RSA OAEP decryption successful, decrypted bytes length: %d\n", len(decryptedBytes))
+	return decryptedBytes, nil
+}
