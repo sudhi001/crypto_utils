@@ -118,25 +118,26 @@ Mean time per operation on Apple M4 (Darwin). Lower is better.
 RSA rows include base64 + PEM parsing of the key on every call, as callers pay it;
 the ↳ rows reuse a parsed key object (Rust `PublicKey` / `PrivateKey`).
 
-| Operation | Go | Rust (pure) | Rust (OpenSSL) | Dart (AOT) |
+| Operation | Go | Rust (OpenSSL, default) | Rust (pure) | Dart (AOT) |
 |---|---:|---:|---:|---:|
-| RSA-2048 key pair generation | 89.91 ms | 183.03 ms | 47.19 ms | 212.50 ms |
-| RSA encrypt, PKCS#1 v1.5 (32-byte AES key) | 45.9 µs | 174.0 µs | 36.3 µs | 187.1 µs |
-| RSA decrypt, PKCS#1 v1.5 | 1.56 ms | 1.42 ms | 1.02 ms | 3.04 ms |
-|   ↳ encrypt with pre-parsed key object | – | 170.8 µs | 18.4 µs | – |
-|   ↳ decrypt with pre-parsed key object | – | 1.36 ms | 630.4 µs | – |
-| RSA encrypt, OAEP-SHA256 | 46.0 µs | 177.8 µs | 38.2 µs | 216.3 µs |
-| RSA decrypt, OAEP-SHA256 | 1.58 ms | 1.42 ms | 1.02 ms | 3.06 ms |
-| AES-256-GCM encrypt, 1 KiB | 2.1 µs | 2.8 µs | 2.8 µs | 96.3 µs |
-| AES-256-GCM decrypt, 1 KiB | 1.6 µs | 1.4 µs | 1.4 µs | 96.7 µs |
-| AES-256-GCM encrypt, 1 MiB | 1.00 ms (1045 MB/s) | 860.0 µs (1219 MB/s) | 839.6 µs (1249 MB/s) | 90.93 ms (12 MB/s) |
-| AES-256-GCM decrypt, 1 MiB | 932.6 µs (1124 MB/s) | 854.4 µs (1227 MB/s) | 842.6 µs (1244 MB/s) | 92.75 ms (11 MB/s) |
-| Sign (RSA-SHA256), 1 KiB | 1.59 ms | 1.42 ms | 1.02 ms | 3.20 ms |
-| Verify (RSA-SHA256), 1 KiB | 45.1 µs | 175.9 µs | 36.8 µs | 225.2 µs |
-| Envelope encrypt + sign, 1 KiB | 1.64 ms | 1.60 ms | 1.06 ms | 3.39 ms |
-| Envelope verify + decrypt, 1 KiB | 1.61 ms | 1.59 ms | 1.06 ms | 3.54 ms |
-Reproduce with `go test -bench . -benchmem -run '^$'` or, for all three
-languages at once, `interop/bench.sh`.
+| RSA-2048 key pair generation | 83.92 ms | 40.48 ms | 200.22 ms | 205.45 ms |
+| RSA encrypt, PKCS#1 v1.5 (32-byte AES key) | 45.0 µs | 36.3 µs | 173.9 µs | 185.3 µs |
+| RSA decrypt, PKCS#1 v1.5 | 1.55 ms | 1.02 ms | 1.41 ms | 2.96 ms |
+|   ↳ encrypt with pre-parsed key object | – | 18.4 µs | 170.6 µs | – |
+|   ↳ decrypt with pre-parsed key object | – | 632.1 µs | 1.35 ms | – |
+| RSA encrypt, OAEP-SHA256 | 46.0 µs | 38.1 µs | 175.8 µs | 212.4 µs |
+| RSA decrypt, OAEP-SHA256 | 1.56 ms | 1.02 ms | 1.42 ms | 2.99 ms |
+| AES-256-GCM encrypt, 1 KiB | 2.1 µs | 2.8 µs | 2.8 µs | 96.0 µs |
+| AES-256-GCM decrypt, 1 KiB | 1.6 µs | 1.4 µs | 1.4 µs | 96.1 µs |
+| AES-256-GCM encrypt, 1 MiB | 1.00 ms (1044 MB/s) | 839.6 µs (1249 MB/s) | 847.3 µs (1238 MB/s) | 91.40 ms (11 MB/s) |
+| AES-256-GCM decrypt, 1 MiB | 944.2 µs (1111 MB/s) | 842.4 µs (1245 MB/s) | 849.9 µs (1234 MB/s) | 92.75 ms (11 MB/s) |
+| Sign (RSA-SHA256), 1 KiB | 1.58 ms | 1.02 ms | 1.42 ms | 3.24 ms |
+| Verify (RSA-SHA256), 1 KiB | 45.0 µs | 37.1 µs | 175.6 µs | 222.8 µs |
+| Envelope encrypt + sign, 1 KiB | 1.62 ms | 1.06 ms | 1.59 ms | 3.32 ms |
+| Envelope verify + decrypt, 1 KiB | 1.61 ms | 1.06 ms | 1.59 ms | 3.47 ms |
+
+Reproduce with `go test -bench . -benchmem -run '^$'` or, for all
+implementations at once, `interop/bench.sh`.
 
 ## Testing
 
