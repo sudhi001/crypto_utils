@@ -1,3 +1,18 @@
+// Package crypto_utils provides RSA + AES-GCM helpers that interoperate with the
+// flutter_crypto_security (Dart) package and the crypto_utils Rust crate.
+//
+// Wire format shared by all implementations:
+//
+//   - Keys are RSA-2048 and transported as base64(PEM). Private keys use the
+//     PKCS#1 "RSA PRIVATE KEY" form, public keys use the PKIX "PUBLIC KEY" form.
+//   - RSA encryption uses PKCS#1 v1.5 padding by default; RSA-OAEP with SHA-256
+//     (MGF1-SHA256, empty label) is available via the *OAEP functions.
+//   - Symmetric encryption is AES-256-GCM with a 12-byte nonce and a 128-bit tag
+//     appended to the ciphertext. No additional authenticated data is used.
+//   - Signatures are RSASSA-PKCS1-v1_5 over the SHA-256 digest of the message.
+//   - The hybrid Envelope carries base64 strings: "key" is the RSA-encrypted raw
+//     32-byte AES key, "nonce" the GCM nonce, "payload" the GCM ciphertext and
+//     "signature" (optional) a signature over the raw ciphertext bytes.
 package crypto_utils
 
 import (
@@ -9,46 +24,75 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 )
 
-// CryptoUtils
-type CryptoUtils struct {
+const (
+	// RSAKeyBits is the modulus size used by GenerateRSAKeyPair.
+	RSAKeyBits = 2048
+	// AESKeySize is the AES-256 key length in bytes.
+	AESKeySize = 32
+	// GCMNonceSize is the AES-GCM nonce length in bytes.
+	GCMNonceSize = 12
+)
+
+var (
+	ErrInvalidKeyLength = errors.New("crypto_utils: AES key must be 32 bytes")
+	ErrInvalidNonce     = errors.New("crypto_utils: AES-GCM nonce must be 12 bytes")
+	ErrMissingField     = errors.New("crypto_utils: envelope is missing key, nonce or payload")
+	ErrBadSignature     = errors.New("crypto_utils: signature verification failed")
+	ErrMissingSignature = errors.New("crypto_utils: envelope has no signature")
+)
+
+// Envelope is the hybrid-encryption container exchanged between client and server.
+// JSON field names are lowercase; decoding is case-insensitive so the historical
+// "Payload"/"Key"/"Nonce" spelling is also accepted.
+type Envelope struct {
+	Payload   string `json:"payload"`
+	Key       string `json:"key"`
+	Nonce     string `json:"nonce"`
+	Signature string `json:"signature,omitempty"`
 }
 
-// NewCryptoUtils creates a new
+// CryptoUtils groups the helpers; it holds no state.
+type CryptoUtils struct{}
+
+// NewCryptoUtils creates a new CryptoUtils.
 func NewCryptoUtils() *CryptoUtils {
 	return &CryptoUtils{}
-
 }
+
+// ---------------------------------------------------------------------------
+// Random / keys
+// ---------------------------------------------------------------------------
+
+// GenerateRandomBytes returns size cryptographically secure random bytes.
 func (c *CryptoUtils) GenerateRandomBytes(size int) ([]byte, error) {
 	bytes := make([]byte, size)
 	_, err := rand.Read(bytes)
 	return bytes, err
 }
+
+// GenerateRSAKeyPair returns (privateKey, publicKey) as base64-encoded PEM strings.
 func (c *CryptoUtils) GenerateRSAKeyPair() (string, string, error) {
-	// Generate RSA key pair
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	privateKey, err := rsa.GenerateKey(rand.Reader, RSAKeyBits)
 	if err != nil {
 		return "", "", err
 	}
 
-	// Convert to PKCS#1 format (what the package expects)
-	privateKeyBytes := x509.MarshalPKCS1PrivateKey(privateKey)
 	privateKeyPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "RSA PRIVATE KEY", // PKCS#1 format
-		Bytes: privateKeyBytes,
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(privateKey),
 	})
 
-	// Convert public key to PKIX format
 	publicKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
 	if err != nil {
 		return "", "", err
 	}
-
 	publicKeyPEM := pem.EncodeToMemory(&pem.Block{
 		Type:  "PUBLIC KEY",
 		Bytes: publicKeyBytes,
@@ -57,6 +101,82 @@ func (c *CryptoUtils) GenerateRSAKeyPair() (string, string, error) {
 	return base64.StdEncoding.EncodeToString(privateKeyPEM), base64.StdEncoding.EncodeToString(publicKeyPEM), nil
 }
 
+// Base64ToPrivateKey converts a base64-encoded PEM string to an *rsa.PrivateKey.
+// Both PKCS#1 ("RSA PRIVATE KEY") and PKCS#8 ("PRIVATE KEY") blocks are accepted.
+func (c *CryptoUtils) Base64ToPrivateKey(base64PrivateKey string) (*rsa.PrivateKey, error) {
+	pemBytes, err := base64.StdEncoding.DecodeString(base64PrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode base64 private key: %w", err)
+	}
+
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, errors.New("invalid PEM block for private key")
+	}
+
+	switch block.Type {
+	case "RSA PRIVATE KEY":
+		privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse RSA private key: %w", err)
+		}
+		return privateKey, nil
+	case "PRIVATE KEY":
+		parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse PKCS#8 private key: %w", err)
+		}
+		privateKey, ok := parsed.(*rsa.PrivateKey)
+		if !ok {
+			return nil, errors.New("parsed key is not an RSA private key")
+		}
+		return privateKey, nil
+	default:
+		return nil, fmt.Errorf("unsupported PEM block type %q for private key", block.Type)
+	}
+}
+
+// Base64ToPublicKey converts a base64-encoded PEM string to an *rsa.PublicKey.
+// Both PKIX ("PUBLIC KEY") and PKCS#1 ("RSA PUBLIC KEY") blocks are accepted.
+func (c *CryptoUtils) Base64ToPublicKey(base64PublicKey string) (*rsa.PublicKey, error) {
+	pemBytes, err := base64.StdEncoding.DecodeString(base64PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode base64 public key: %w", err)
+	}
+
+	block, _ := pem.Decode(pemBytes)
+	if block == nil {
+		return nil, errors.New("invalid PEM block for public key")
+	}
+
+	switch block.Type {
+	case "PUBLIC KEY":
+		parsed, err := x509.ParsePKIXPublicKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse RSA public key: %w", err)
+		}
+		publicKey, ok := parsed.(*rsa.PublicKey)
+		if !ok {
+			return nil, errors.New("parsed key is not an RSA public key")
+		}
+		return publicKey, nil
+	case "RSA PUBLIC KEY":
+		publicKey, err := x509.ParsePKCS1PublicKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse PKCS#1 public key: %w", err)
+		}
+		return publicKey, nil
+	default:
+		return nil, fmt.Errorf("unsupported PEM block type %q for public key", block.Type)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RSA encryption
+// ---------------------------------------------------------------------------
+
+// EncryptWithPublicKey encrypts message with RSA PKCS#1 v1.5 and returns base64.
+// It panics on failure; prefer EncryptRSA for error handling.
 func (c *CryptoUtils) EncryptWithPublicKey(publicKey *rsa.PublicKey, message []byte) string {
 	encryptedBytes, err := rsa.EncryptPKCS1v15(rand.Reader, publicKey, message)
 	if err != nil {
@@ -65,178 +185,388 @@ func (c *CryptoUtils) EncryptWithPublicKey(publicKey *rsa.PublicKey, message []b
 	return base64.StdEncoding.EncodeToString(encryptedBytes)
 }
 
-// Converts a Base64-encoded PEM string to an *rsa.PrivateKey
-func (c *CryptoUtils) Base64ToPrivateKey(base64PrivateKey string) (*rsa.PrivateKey, error) {
-	// Decode the Base64 string
-	pemBytes, err := base64.StdEncoding.DecodeString(base64PrivateKey)
+// EncryptRSA encrypts message with RSA PKCS#1 v1.5 using a base64 PEM public key.
+func (c *CryptoUtils) EncryptRSA(publicKeyString string, message []byte) (string, error) {
+	publicKey, err := c.Base64ToPublicKey(publicKeyString)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode base64 private key: %w", err)
+		return "", err
 	}
-
-	// Decode the PEM block
-	block, _ := pem.Decode(pemBytes)
-	if block == nil || block.Type != "RSA PRIVATE KEY" {
-		return nil, errors.New("invalid PEM block for private key")
-	}
-
-	// Parse the private key
-	privateKey, err := x509.ParsePKCS1PrivateKey(block.Bytes)
+	encryptedBytes, err := rsa.EncryptPKCS1v15(rand.Reader, publicKey, message)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse RSA private key: %w", err)
+		return "", fmt.Errorf("RSA encryption failed: %w", err)
 	}
-
-	return privateKey, nil
+	return base64.StdEncoding.EncodeToString(encryptedBytes), nil
 }
 
-// Converts a Base64-encoded PEM string to an *rsa.PublicKey
-func (c *CryptoUtils) Base64ToPublicKey(base64PublicKey string) (*rsa.PublicKey, error) {
-	// Decode the Base64 string
-	pemBytes, err := base64.StdEncoding.DecodeString(base64PublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decode base64 public key: %w", err)
-	}
-
-	// Decode the PEM block
-	block, _ := pem.Decode(pemBytes)
-	if block == nil || block.Type != "PUBLIC KEY" {
-		return nil, errors.New("invalid PEM block for public key")
-	}
-
-	// Parse the public key
-	parsedKey, err := x509.ParsePKIXPublicKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse RSA public key: %w", err)
-	}
-
-	// Ensure the parsed key is an *rsa.PublicKey
-	publicKey, ok := parsedKey.(*rsa.PublicKey)
-	if !ok {
-		return nil, errors.New("parsed key is not an RSA public key")
-	}
-
-	return publicKey, nil
-}
+// DecryptWithPrivateKey decrypts a base64 RSA PKCS#1 v1.5 ciphertext.
 func (c *CryptoUtils) DecryptWithPrivateKey(privateKeyString string, encryptedMessage string) ([]byte, error) {
 	privateKey, err := c.Base64ToPrivateKey(privateKeyString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse private key from base64 string: %w", err)
 	}
-	fmt.Println("Private Key Parsed successfully")
-
 	encryptedBytes, err := base64.StdEncoding.DecodeString(encryptedMessage)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode encrypted message from base64: %w", err)
 	}
-	fmt.Printf("Message decoded successfully, encrypted bytes length: %d\n", len(encryptedBytes))
-
-	// Add debugging info about the private key
-	fmt.Printf("Private key modulus length: %d bits\n", privateKey.N.BitLen())
-	fmt.Printf("Private key public exponent: %d\n", privateKey.PublicKey.E)
-
 	decryptedBytes, err := rsa.DecryptPKCS1v15(rand.Reader, privateKey, encryptedBytes)
 	if err != nil {
 		return nil, fmt.Errorf("RSA decryption failed: %w", err)
 	}
-
-	fmt.Printf("RSA decryption successful, decrypted bytes length: %d\n", len(decryptedBytes))
 	return decryptedBytes, nil
 }
 
-func (c *CryptoUtils) EncryptWithAES(key, plaintext []byte) (ciphertext string, nonce []byte) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		panic(err)
-	}
-	nonce = make([]byte, 12) // AES-GCM nonce size
-	_, err = io.ReadFull(rand.Reader, nonce)
-	if err != nil {
-		panic(err)
-	}
-	aesGCM, err := cipher.NewGCM(block)
-	if err != nil {
-		panic(err)
-	}
-	ciphertextBytes := aesGCM.Seal(nil, nonce, plaintext, nil)
-	ciphertext = base64.StdEncoding.EncodeToString(ciphertextBytes)
-	return
+// DecryptRSA is an alias of DecryptWithPrivateKey, mirroring EncryptRSA.
+func (c *CryptoUtils) DecryptRSA(privateKeyString string, encryptedMessage string) ([]byte, error) {
+	return c.DecryptWithPrivateKey(privateKeyString, encryptedMessage)
 }
 
-func (c *CryptoUtils) DecryptWithAES(key, ciphertext, nonce []byte) string {
-	ciphertextBytes, _ := base64.StdEncoding.DecodeString(string(ciphertext))
+// EncryptWithPublicKeyOAEP encrypts message with RSA-OAEP (SHA-256) and returns base64.
+func (c *CryptoUtils) EncryptWithPublicKeyOAEP(publicKeyString string, message []byte) (string, error) {
+	publicKey, err := c.Base64ToPublicKey(publicKeyString)
+	if err != nil {
+		return "", err
+	}
+	encryptedBytes, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, publicKey, message, nil)
+	if err != nil {
+		return "", fmt.Errorf("RSA OAEP encryption failed: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(encryptedBytes), nil
+}
+
+// DecryptWithPrivateKeyOAEP decrypts a base64 RSA-OAEP (SHA-256) ciphertext.
+func (c *CryptoUtils) DecryptWithPrivateKeyOAEP(privateKeyString string, encryptedMessage string) ([]byte, error) {
+	privateKey, err := c.Base64ToPrivateKey(privateKeyString)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse private key from base64 string: %w", err)
+	}
+	encryptedBytes, err := base64.StdEncoding.DecodeString(encryptedMessage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode encrypted message from base64: %w", err)
+	}
+	decryptedBytes, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, encryptedBytes, nil)
+	if err != nil {
+		return nil, fmt.Errorf("RSA OAEP decryption failed: %w", err)
+	}
+	return decryptedBytes, nil
+}
+
+// ---------------------------------------------------------------------------
+// AES-GCM
+// ---------------------------------------------------------------------------
+
+// EncryptAESGCM encrypts plaintext with AES-256-GCM using a fresh random nonce.
+// It returns the base64 ciphertext (tag appended) and the base64 nonce.
+func (c *CryptoUtils) EncryptAESGCM(key, plaintext []byte) (ciphertextB64 string, nonceB64 string, err error) {
+	if len(key) != AESKeySize {
+		return "", "", ErrInvalidKeyLength
+	}
+	nonce := make([]byte, GCMNonceSize)
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", "", err
+	}
+	ciphertext, err := c.EncryptAESGCMWithNonce(key, nonce, plaintext)
+	if err != nil {
+		return "", "", err
+	}
+	return base64.StdEncoding.EncodeToString(ciphertext), base64.StdEncoding.EncodeToString(nonce), nil
+}
+
+// EncryptAESGCMWithNonce encrypts plaintext with AES-256-GCM using the supplied
+// nonce and returns the raw ciphertext with the tag appended.
+func (c *CryptoUtils) EncryptAESGCMWithNonce(key, nonce, plaintext []byte) ([]byte, error) {
+	if len(key) != AESKeySize {
+		return nil, ErrInvalidKeyLength
+	}
+	if len(nonce) != GCMNonceSize {
+		return nil, ErrInvalidNonce
+	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 	aesGCM, err := cipher.NewGCM(block)
 	if err != nil {
+		return nil, err
+	}
+	return aesGCM.Seal(nil, nonce, plaintext, nil), nil
+}
+
+// DecryptAESGCM decrypts a base64 AES-256-GCM ciphertext with a base64 nonce.
+func (c *CryptoUtils) DecryptAESGCM(key []byte, ciphertextB64, nonceB64 string) ([]byte, error) {
+	ciphertext, err := base64.StdEncoding.DecodeString(ciphertextB64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode ciphertext from base64: %w", err)
+	}
+	nonce, err := base64.StdEncoding.DecodeString(nonceB64)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode nonce from base64: %w", err)
+	}
+	return c.DecryptAESGCMBytes(key, nonce, ciphertext)
+}
+
+// DecryptAESGCMBytes decrypts raw AES-256-GCM ciphertext (tag appended).
+func (c *CryptoUtils) DecryptAESGCMBytes(key, nonce, ciphertext []byte) ([]byte, error) {
+	if len(key) != AESKeySize {
+		return nil, ErrInvalidKeyLength
+	}
+	if len(nonce) != GCMNonceSize {
+		return nil, ErrInvalidNonce
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	aesGCM, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	plaintext, err := aesGCM.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("AES-GCM decryption failed: %w", err)
+	}
+	return plaintext, nil
+}
+
+// EncryptWithAES is the legacy AES-GCM helper: it returns the base64 ciphertext
+// and the raw nonce, and panics on failure. Prefer EncryptAESGCM.
+func (c *CryptoUtils) EncryptWithAES(key, plaintext []byte) (ciphertext string, nonce []byte) {
+	nonce = make([]byte, GCMNonceSize)
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 		panic(err)
 	}
-	plaintext, err := aesGCM.Open(nil, nonce, ciphertextBytes, nil)
+	ciphertextBytes, err := c.EncryptAESGCMWithNonce(key, nonce, plaintext)
+	if err != nil {
+		panic(err)
+	}
+	return base64.StdEncoding.EncodeToString(ciphertextBytes), nonce
+}
+
+// DecryptWithAES is the legacy AES-GCM helper: ciphertext is the base64 string
+// as bytes, nonce is raw. It panics on failure. Prefer DecryptAESGCM.
+func (c *CryptoUtils) DecryptWithAES(key, ciphertext, nonce []byte) string {
+	ciphertextBytes, err := base64.StdEncoding.DecodeString(string(ciphertext))
+	if err != nil {
+		panic(err)
+	}
+	plaintext, err := c.DecryptAESGCMBytes(key, nonce, ciphertextBytes)
 	if err != nil {
 		panic(err)
 	}
 	return string(plaintext)
 }
 
-// SignWithPrivateKey signs the message using the private key (encrypt with private key)
-func (c *CryptoUtils) SignWithPrivateKey(privateKeyString string, message []byte) string {
+// ---------------------------------------------------------------------------
+// Signatures
+// ---------------------------------------------------------------------------
+
+// Sign returns the base64 RSASSA-PKCS1-v1_5/SHA-256 signature of message.
+func (c *CryptoUtils) Sign(privateKeyString string, message []byte) (string, error) {
 	privateKey, err := c.Base64ToPrivateKey(privateKeyString)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
-	hashed := sha256Sum(message)
-	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed)
+	hashed := sha256.Sum256(message)
+	signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("RSA signing failed: %w", err)
 	}
-	return base64.StdEncoding.EncodeToString(signature)
+	return base64.StdEncoding.EncodeToString(signature), nil
 }
 
-// VerifyWithPublicKey verifies the signature using the public key (decrypt with public key)
-func (c *CryptoUtils) VerifyWithPublicKey(publicKeyString string, message []byte, base64Signature string) bool {
+// Verify checks a base64 RSASSA-PKCS1-v1_5/SHA-256 signature. It returns
+// (false, nil) for a well-formed but invalid signature and a non-nil error
+// when the key or signature cannot be decoded.
+func (c *CryptoUtils) Verify(publicKeyString string, message []byte, base64Signature string) (bool, error) {
 	publicKey, err := c.Base64ToPublicKey(publicKeyString)
 	if err != nil {
-		panic(err)
+		return false, err
 	}
 	signature, err := base64.StdEncoding.DecodeString(base64Signature)
 	if err != nil {
+		return false, fmt.Errorf("failed to decode signature from base64: %w", err)
+	}
+	hashed := sha256.Sum256(message)
+	return rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed[:], signature) == nil, nil
+}
+
+// SignWithPrivateKey is the legacy signing helper; it panics on failure. Prefer Sign.
+func (c *CryptoUtils) SignWithPrivateKey(privateKeyString string, message []byte) string {
+	signature, err := c.Sign(privateKeyString, message)
+	if err != nil {
 		panic(err)
 	}
-	hashed := sha256Sum(message)
-	err = rsa.VerifyPKCS1v15(publicKey, crypto.SHA256, hashed, signature)
-	return err == nil
+	return signature
 }
 
-// helper function to calculate SHA256 hash
-func sha256Sum(message []byte) []byte {
-	hash := sha256.New()
-	hash.Write(message)
-	return hash.Sum(nil)
+// VerifyWithPublicKey is the legacy verification helper; it panics if the key
+// or signature cannot be decoded. Prefer Verify.
+func (c *CryptoUtils) VerifyWithPublicKey(publicKeyString string, message []byte, base64Signature string) bool {
+	ok, err := c.Verify(publicKeyString, message, base64Signature)
+	if err != nil {
+		panic(err)
+	}
+	return ok
 }
 
-func (c *CryptoUtils) DecryptWithPrivateKeyOAEP(privateKeyString string, encryptedMessage string) ([]byte, error) {
-	privateKey, err := c.Base64ToPrivateKey(privateKeyString)
+// ---------------------------------------------------------------------------
+// Hybrid envelope
+// ---------------------------------------------------------------------------
+
+// EncryptPayload wraps payload in an Envelope: a fresh AES-256 key encrypts the
+// payload with GCM and the raw key is RSA PKCS#1 v1.5 encrypted for recipientPublicKey.
+func (c *CryptoUtils) EncryptPayload(recipientPublicKey string, payload []byte) (*Envelope, error) {
+	return c.encryptPayload(recipientPublicKey, "", payload, false)
+}
+
+// EncryptPayloadOAEP is EncryptPayload with RSA-OAEP (SHA-256) for the key.
+func (c *CryptoUtils) EncryptPayloadOAEP(recipientPublicKey string, payload []byte) (*Envelope, error) {
+	return c.encryptPayload(recipientPublicKey, "", payload, true)
+}
+
+// EncryptPayloadSigned is EncryptPayload plus a signature over the raw AES-GCM
+// ciphertext made with senderPrivateKey.
+func (c *CryptoUtils) EncryptPayloadSigned(recipientPublicKey, senderPrivateKey string, payload []byte) (*Envelope, error) {
+	return c.encryptPayload(recipientPublicKey, senderPrivateKey, payload, false)
+}
+
+// EncryptPayloadSignedOAEP is EncryptPayloadSigned with RSA-OAEP (SHA-256) for the key.
+func (c *CryptoUtils) EncryptPayloadSignedOAEP(recipientPublicKey, senderPrivateKey string, payload []byte) (*Envelope, error) {
+	return c.encryptPayload(recipientPublicKey, senderPrivateKey, payload, true)
+}
+
+func (c *CryptoUtils) encryptPayload(recipientPublicKey, senderPrivateKey string, payload []byte, oaep bool) (*Envelope, error) {
+	aesKey, err := c.GenerateRandomBytes(AESKeySize)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse private key from base64 string: %w", err)
+		return nil, err
 	}
-	fmt.Println("Private Key Parsed successfully")
-
-	encryptedBytes, err := base64.StdEncoding.DecodeString(encryptedMessage)
+	nonce, err := c.GenerateRandomBytes(GCMNonceSize)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode encrypted message from base64: %w", err)
+		return nil, err
 	}
-	fmt.Printf("Message decoded successfully, encrypted bytes length: %d\n", len(encryptedBytes))
-
-	// Add debugging info about the private key
-	fmt.Printf("Private key modulus length: %d bits\n", privateKey.N.BitLen())
-	fmt.Printf("Private key public exponent: %d\n", privateKey.PublicKey.E)
-
-	// Try OAEP decryption instead of PKCS1v15
-	decryptedBytes, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, privateKey, encryptedBytes, nil)
+	ciphertext, err := c.EncryptAESGCMWithNonce(aesKey, nonce, payload)
 	if err != nil {
-		return nil, fmt.Errorf("RSA OAEP decryption failed: %w", err)
+		return nil, err
 	}
 
-	fmt.Printf("RSA OAEP decryption successful, decrypted bytes length: %d\n", len(decryptedBytes))
-	return decryptedBytes, nil
+	var encryptedKey string
+	if oaep {
+		encryptedKey, err = c.EncryptWithPublicKeyOAEP(recipientPublicKey, aesKey)
+	} else {
+		encryptedKey, err = c.EncryptRSA(recipientPublicKey, aesKey)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	env := &Envelope{
+		Payload: base64.StdEncoding.EncodeToString(ciphertext),
+		Key:     encryptedKey,
+		Nonce:   base64.StdEncoding.EncodeToString(nonce),
+	}
+	if senderPrivateKey != "" {
+		env.Signature, err = c.Sign(senderPrivateKey, ciphertext)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return env, nil
+}
+
+// DecryptPayload opens an Envelope with recipientPrivateKey (RSA PKCS#1 v1.5).
+// The signature, if present, is not checked; use DecryptPayloadVerified for that.
+func (c *CryptoUtils) DecryptPayload(recipientPrivateKey string, env *Envelope) ([]byte, error) {
+	return c.decryptPayload(recipientPrivateKey, "", env, false)
+}
+
+// DecryptPayloadOAEP is DecryptPayload for envelopes produced with RSA-OAEP.
+func (c *CryptoUtils) DecryptPayloadOAEP(recipientPrivateKey string, env *Envelope) ([]byte, error) {
+	return c.decryptPayload(recipientPrivateKey, "", env, true)
+}
+
+// DecryptPayloadVerified opens an Envelope and requires a valid signature from
+// senderPublicKey over the raw ciphertext.
+func (c *CryptoUtils) DecryptPayloadVerified(recipientPrivateKey, senderPublicKey string, env *Envelope) ([]byte, error) {
+	return c.decryptPayload(recipientPrivateKey, senderPublicKey, env, false)
+}
+
+// DecryptPayloadVerifiedOAEP is DecryptPayloadVerified for RSA-OAEP envelopes.
+func (c *CryptoUtils) DecryptPayloadVerifiedOAEP(recipientPrivateKey, senderPublicKey string, env *Envelope) ([]byte, error) {
+	return c.decryptPayload(recipientPrivateKey, senderPublicKey, env, true)
+}
+
+func (c *CryptoUtils) decryptPayload(recipientPrivateKey, senderPublicKey string, env *Envelope, oaep bool) ([]byte, error) {
+	if env == nil || env.Key == "" || env.Nonce == "" || env.Payload == "" {
+		return nil, ErrMissingField
+	}
+
+	ciphertext, err := base64.StdEncoding.DecodeString(env.Payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode payload from base64: %w", err)
+	}
+	nonce, err := base64.StdEncoding.DecodeString(env.Nonce)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode nonce from base64: %w", err)
+	}
+
+	if senderPublicKey != "" {
+		if env.Signature == "" {
+			return nil, ErrMissingSignature
+		}
+		ok, err := c.Verify(senderPublicKey, ciphertext, env.Signature)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, ErrBadSignature
+		}
+	}
+
+	var rawKey []byte
+	if oaep {
+		rawKey, err = c.DecryptWithPrivateKeyOAEP(recipientPrivateKey, env.Key)
+	} else {
+		rawKey, err = c.DecryptWithPrivateKey(recipientPrivateKey, env.Key)
+	}
+	if err != nil {
+		return nil, err
+	}
+	aesKey, err := normalizeAESKey(rawKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.DecryptAESGCMBytes(aesKey, nonce, ciphertext)
+}
+
+// normalizeAESKey accepts the canonical raw 32-byte key and, for backward
+// compatibility with older clients, the 44-character base64 text of the key.
+func normalizeAESKey(raw []byte) ([]byte, error) {
+	if len(raw) == AESKeySize {
+		return raw, nil
+	}
+	if len(raw) == 44 {
+		decoded, err := base64.StdEncoding.DecodeString(string(raw))
+		if err == nil && len(decoded) == AESKeySize {
+			return decoded, nil
+		}
+	}
+	return nil, fmt.Errorf("crypto_utils: decrypted AES key has unexpected length %d", len(raw))
+}
+
+// EncryptJSON marshals v to JSON and wraps it with EncryptPayload.
+func (c *CryptoUtils) EncryptJSON(recipientPublicKey string, v any) (*Envelope, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	return c.EncryptPayload(recipientPublicKey, data)
+}
+
+// DecryptJSON opens an Envelope with DecryptPayload and unmarshals the JSON into v.
+func (c *CryptoUtils) DecryptJSON(recipientPrivateKey string, env *Envelope, v any) error {
+	data, err := c.DecryptPayload(recipientPrivateKey, env)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, v)
 }

@@ -1,165 +1,148 @@
-# crypto_utils
+# crypto_utils (Go)
 
-`crypto_utils` is a Go package that simplifies cryptographic operations like RSA key pair generation, encryption/decryption using RSA and AES, and encoding/decoding of keys. The package is designed to help developers securely handle encryption needs with ease.
+Encrypt, sign and exchange data between a Go backend and Flutter (Dart) or
+Rust clients — with one wire format that all three understand.
 
-## Features
+This package is the **server-side** half of the toolkit:
 
-- Generate RSA key pairs (private and public keys).
-- Encrypt and decrypt messages using RSA public and private keys.
-- Encrypt and decrypt messages using AES-GCM (with a randomly generated nonce).
-- Convert Base64-encoded PEM strings into RSA keys.
-- Utility functions for encoding and decoding cryptographic data.
+| Implementation | Repository |
+|---|---|
+| Go (this package) | `crypto_utils` |
+| Dart / Flutter | [`flutter_crypto_security`](https://github.com/sudhi001/flutter_crypto_security) |
+| Rust | `crypto_utils_rust` |
+
+All three are cross-tested against each other (123 checks in `interop/run.sh`)
+and against a real envelope captured from production.
+
+## What it does, in plain English
+
+Think of sending a valuable letter:
+
+1. The letter goes in a **steel box locked with a fresh padlock key** — that is
+   AES-256-GCM, fast and tamper-evident.
+2. The padlock key is far too sensitive to mail in the open, so it is snapped
+   into a **tiny box that only the recipient can open** — RSA with the
+   recipient's public key.
+3. You press your **wax seal** on the parcel so the recipient knows it really
+   came from you — an RSA signature.
+4. Everything ships as one small JSON **envelope**:
+
+```json
+{ "payload": "…locked box…", "key": "…tiny box…", "nonce": "…fresh-start number…", "signature": "…wax seal…" }
+```
+
+`EncryptPayload` builds that parcel; `DecryptPayload` opens it. Everything
+else in the package is the individual tools those two use. A longer
+explanation with a glossary lives in `interop/PLAIN_ENGLISH.md`.
 
 ## Installation
-
-Use `go get` to install the package:
 
 ```bash
 go get github.com/sudhi001/crypto_utils
 ```
 
-## Usage
+Requires Go 1.26+ (standard library only, no third-party dependencies).
 
-### Import the Package
+## Quick start
 
 ```go
 import "github.com/sudhi001/crypto_utils"
+
+c := crypto_utils.NewCryptoUtils()
+
+// 1. Keys — generated once, stored as plain strings (base64 of PEM).
+serverPriv, serverPub, err := c.GenerateRSAKeyPair()
+
+// 2. Open a request from the app.
+var env crypto_utils.Envelope
+_ = json.NewDecoder(r.Body).Decode(&env)             // {"payload","key","nonce"[,"signature"]}
+plaintext, err := c.DecryptPayload(serverPriv, &env)  // or DecryptPayloadVerified(serverPriv, devicePub, &env)
+
+// 3. Answer the app.
+reply, err := c.EncryptPayloadSigned(devicePub, serverPriv, responseJSON)
+_ = json.NewEncoder(w).Encode(reply)
 ```
 
-### Example: RSA Key Pair Generation
+Typed variants: `EncryptJSON(pub, v)` / `DecryptJSON(priv, &env, &v)`.
+`*OAEP` variants wrap the AES key with RSA-OAEP-SHA256 instead of PKCS#1 v1.5.
+
+### Individual tools
 
 ```go
-crypto := crypto_utils.NewCryptoUtils()
+// RSA
+ct, err := c.EncryptRSA(pub, small)                    // PKCS#1 v1.5 → base64
+pt, err := c.DecryptWithPrivateKey(priv, ct)
+ct, err  = c.EncryptWithPublicKeyOAEP(pub, small)      // OAEP-SHA256
+pt, err  = c.DecryptWithPrivateKeyOAEP(priv, ct)
 
-privateKey, publicKey, err := crypto.GenerateRSAKeyPair()
-if err != nil {
-    panic(err)
-}
-fmt.Println("Private Key:", privateKey)
-fmt.Println("Public Key:", publicKey)
+// AES-256-GCM
+key, _ := c.GenerateRandomBytes(crypto_utils.AESKeySize)
+ctB64, nonceB64, err := c.EncryptAESGCM(key, data)
+data, err = c.DecryptAESGCM(key, ctB64, nonceB64)
+
+// Signatures
+sig, err := c.Sign(priv, message)                      // base64
+ok, err := c.Verify(pub, message, sig)                 // (false, nil) = bad signature
 ```
 
-### Example: RSA Encryption and Decryption
+## API reference
 
-```go
-// Initialize CryptoUtils
-crypto := crypto_utils.NewCryptoUtils()
+| Function | Description |
+|---|---|
+| `GenerateRSAKeyPair() (priv, pub string, err)` | RSA-2048 pair as base64(PEM) |
+| `GenerateRandomBytes(n) ([]byte, error)` | CSPRNG bytes |
+| `Base64ToPrivateKey / Base64ToPublicKey` | Parse base64(PEM) keys (PKCS#1/PKCS#8, PKIX/PKCS#1) |
+| `EncryptRSA / DecryptWithPrivateKey` | RSA PKCS#1 v1.5, base64 ciphertext |
+| `EncryptWithPublicKeyOAEP / DecryptWithPrivateKeyOAEP` | RSA-OAEP SHA-256 |
+| `EncryptAESGCM / DecryptAESGCM` | AES-256-GCM with base64 in/out |
+| `EncryptAESGCMWithNonce / DecryptAESGCMBytes` | AES-256-GCM on raw bytes |
+| `Sign / Verify` | RSASSA-PKCS1-v1_5 SHA-256, base64 signature |
+| `EncryptPayload[Signed][OAEP]` | Build an `Envelope` |
+| `DecryptPayload[Verified][OAEP]` | Open an `Envelope` |
+| `EncryptJSON / DecryptJSON` | Envelope + JSON marshalling |
+| `EncryptWithPublicKey`, `EncryptWithAES`, `DecryptWithAES`, `SignWithPrivateKey`, `VerifyWithPublicKey` | Legacy helpers (panic on error) |
 
-// Example public and private keys
-publicKeyString := "BASE64_ENCODED_PUBLIC_KEY"
-privateKeyString := "BASE64_ENCODED_PRIVATE_KEY"
+Sentinel errors: `ErrInvalidKeyLength`, `ErrInvalidNonce`, `ErrMissingField`,
+`ErrMissingSignature`, `ErrBadSignature`.
 
-// Convert public key from Base64 to *rsa.PublicKey
-publicKey, _ := crypto.Base64ToPublicKey(publicKeyString)
+## Compatibility
 
-// Encrypt a message using the public key
-message := []byte("Hello, secure world!")
-encryptedMessage := crypto.EncryptWithPublicKey(publicKey, message)
-fmt.Println("Encrypted Message:", encryptedMessage)
+* Envelopes from **older Flutter clients** (which wrapped the base64 *text* of
+  the AES key) still open — `DecryptPayload` accepts both forms.
+* JSON decoding is case-insensitive, so `Payload`/`Key`/`Nonce` also work.
+* Wire format details: `interop/PROTOCOL.md`.
 
-// Decrypt the message using the private key
-decryptedMessage := crypto.DecryptWithPrivateKey(privateKeyString, encryptedMessage)
-fmt.Println("Decrypted Message:", string(decryptedMessage))
+## Performance
+
+Mean time per operation on Apple M4 (Darwin). Lower is better.
+RSA rows include base64 + PEM parsing of the key on every call, as callers pay it.
+
+| Operation | Go | Rust | Dart (AOT) |
+|---|---:|---:|---:|
+| RSA-2048 key pair generation | 67.92 ms | 158.42 ms | 304.99 ms |
+| RSA encrypt, PKCS#1 v1.5 (32-byte AES key) | 44.9 µs | 174.8 µs | 188.3 µs |
+| RSA decrypt, PKCS#1 v1.5 | 1.56 ms | 1.42 ms | 3.11 ms |
+| RSA encrypt, OAEP-SHA256 | 45.9 µs | 177.3 µs | 216.0 µs |
+| RSA decrypt, OAEP-SHA256 | 1.56 ms | 1.42 ms | 3.10 ms |
+| AES-256-GCM encrypt, 1 KiB | 2.1 µs | 2.8 µs | 95.6 µs |
+| AES-256-GCM decrypt, 1 KiB | 1.6 µs | 1.4 µs | 96.4 µs |
+| AES-256-GCM encrypt, 1 MiB | 1.01 ms (1043 MB/s) | 848.5 µs (1236 MB/s) | 90.83 ms (12 MB/s) |
+| AES-256-GCM decrypt, 1 MiB | 947.7 µs (1106 MB/s) | 849.7 µs (1234 MB/s) | 92.57 ms (11 MB/s) |
+| Sign (RSA-SHA256), 1 KiB | 1.58 ms | 1.42 ms | 3.31 ms |
+| Verify (RSA-SHA256), 1 KiB | 45.0 µs | 176.9 µs | 226.0 µs |
+| Envelope encrypt + sign, 1 KiB | 1.62 ms | 1.60 ms | 3.40 ms |
+| Envelope verify + decrypt, 1 KiB | 1.60 ms | 1.59 ms | 3.53 ms |
+
+Reproduce with `go test -bench . -benchmem -run '^$'` or, for all three
+languages at once, `interop/bench.sh`.
+
+## Testing
+
+```bash
+go test ./...          # unit tests, incl. the captured production envelope
+../interop/run.sh      # cross-language interoperability suite
 ```
-
-### Example: AES Encryption and Decryption
-
-```go
-// AES key (32 bytes for AES-256)
-symmetricKey := make([]byte, 32)
-_, err := rand.Read(symmetricKey)
-if err != nil {
-    panic(err)
-}
-
-// Encrypt a message
-plaintext := []byte("Sensitive data")
-encryptedMessage, nonce := crypto.EncryptWithAES(symmetricKey, plaintext)
-fmt.Println("Encrypted Message:", encryptedMessage)
-fmt.Println("Nonce:", nonce)
-
-// Decrypt the message
-decryptedMessage := crypto.DecryptWithAES(symmetricKey, []byte(encryptedMessage), nonce)
-fmt.Println("Decrypted Message:", decryptedMessage)
-```
-
-## API Reference
-
-### `NewCryptoUtils() *CryptoUtils`
-Creates a new instance of the `CryptoUtils` struct.
-
----
-
-### `GenerateRSAKeyPair() (string, string, error)`
-Generates a new RSA key pair (private and public keys) in Base64-encoded PEM format.
-
----
-
-### `EncryptWithPublicKey(publicKey *rsa.PublicKey, message []byte) string`
-Encrypts a message using an RSA public key. Returns the Base64-encoded ciphertext.
-
----
-
-### `DecryptWithPrivateKey(privateKeyString string, encryptedMessage string) []byte`
-Decrypts a Base64-encoded message using an RSA private key.
-
----
-
-### `Base64ToPrivateKey(base64PrivateKey string) (*rsa.PrivateKey, error)`
-Converts a Base64-encoded PEM string into an RSA private key.
-
----
-
-### `Base64ToPublicKey(base64PublicKey string) (*rsa.PublicKey, error)`
-Converts a Base64-encoded PEM string into an RSA public key.
-
----
-
-### `EncryptWithAES(key, plaintext []byte) (ciphertext string, nonce []byte)`
-Encrypts plaintext using AES-GCM with the provided key. Returns a Base64-encoded ciphertext and a randomly generated nonce.
-
----
-
-### `DecryptWithAES(key, ciphertext, nonce []byte) string`
-Decrypts an AES-GCM-encrypted ciphertext using the provided key and nonce. Returns the plaintext.
 
 ## License
 
-This package is licensed under the MIT License. See `LICENSE` for more information.
-
-
-
-package crypto_utils_test
-
-import (
-	"encoding/base64"
-	"fmt"
-	"testing"
-
-	"github.com/sudhi001/crypto_utils"
-)
-
-func TestCryptoUtils_NewSession(t *testing.T) {
-	crypto := crypto_utils.NewCryptoUtils()
-	// Provided test vectors
-	keyB64 := "NwUqUByc21I71POTifDQ1OPjhwBIFNd1Q2wodYbxOkE="
-	nonceB64 := "/jy/osqLyF8pgnI8"
-	ciphertextB64 := "AHlo1s9rKPRSL3qTv9LqN+giCtQ9"
-
-	key, err := base64.StdEncoding.DecodeString(keyB64)
-	if err != nil {
-		t.Fatalf("Failed to decode key: %v", err)
-	}
-	nonce, err := base64.StdEncoding.DecodeString(nonceB64)
-	if err != nil {
-		t.Fatalf("Failed to decode nonce: %v", err)
-	}
-
-
-	// Decrypt
-	plaintext := crypto.DecryptWithAES(key, []byte(ciphertextB64), nonce)
-	if plaintext == "" {
-		t.Errorf("Decryption failed, got empty string")
-	}
-	fmt.Printf("Decrypted message: %s\n", plaintext)
-}
+MIT — see `LICENSE`.
