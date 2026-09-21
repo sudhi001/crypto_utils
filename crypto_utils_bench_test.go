@@ -62,6 +62,29 @@ func BenchmarkRsaPkcs1Decrypt32b(b *testing.B) {
 	}
 }
 
+func BenchmarkRsaPkcs1Encrypt32bCachedKey(b *testing.B) {
+	c := crypto_utils.NewCryptoUtils()
+	pub, _ := c.Base64ToPublicKey(benchPub)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := c.EncryptRSAWithKey(pub, benchAESKey, false); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkRsaPkcs1Decrypt32bCachedKey(b *testing.B) {
+	c := crypto_utils.NewCryptoUtils()
+	priv, _ := c.Base64ToPrivateKey(benchPriv)
+	ct, _ := c.EncryptRSA(benchPub, benchAESKey)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := c.DecryptRSAWithKey(priv, ct, false); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func BenchmarkRsaOaepEncrypt32b(b *testing.B) {
 	c := crypto_utils.NewCryptoUtils()
 	for i := 0; i < b.N; i++ {
@@ -144,6 +167,55 @@ func BenchmarkEnvelopeDecryptVerified1kib(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		if _, err := c.DecryptPayloadVerified(benchPriv, benchPub, env); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// ---- Envelope v2 (X25519 + Ed25519) ----
+
+var benchXPriv, benchXPub, benchEdPriv, benchEdPub = mustBenchV2Keys()
+
+func mustBenchV2Keys() (string, string, string, string) {
+	c := crypto_utils.NewCryptoUtils()
+	xPriv, xPub, err := c.GenerateX25519KeyPair()
+	if err != nil {
+		panic(err)
+	}
+	edPriv, edPub, err := c.GenerateEd25519KeyPair()
+	if err != nil {
+		panic(err)
+	}
+	return xPriv, xPub, edPriv, edPub
+}
+
+func BenchmarkV2Keygen(b *testing.B) {
+	c := crypto_utils.NewCryptoUtils()
+	for i := 0; i < b.N; i++ {
+		if _, _, err := c.GenerateX25519KeyPair(); err != nil {
+			b.Fatal(err)
+		}
+		if _, _, err := c.GenerateEd25519KeyPair(); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkV2EnvelopeEncryptSigned1kib(b *testing.B) {
+	c := crypto_utils.NewCryptoUtils()
+	for i := 0; i < b.N; i++ {
+		if _, err := c.EncryptPayloadV2(benchXPub, benchEdPriv, bench1KiB); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkV2EnvelopeDecryptVerified1kib(b *testing.B) {
+	c := crypto_utils.NewCryptoUtils()
+	env, _ := c.EncryptPayloadV2(benchXPub, benchEdPriv, bench1KiB)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := c.DecryptPayloadV2(benchXPriv, benchEdPub, env); err != nil {
 			b.Fatal(err)
 		}
 	}

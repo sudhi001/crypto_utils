@@ -11,6 +11,9 @@
 //	verify      <pub> <in> <sig_b64>
 //	aes-encrypt <key_b64_file> <in> <out_json>
 //	aes-decrypt <key_b64_file> <in_json> <out>
+//	keygen-v2   <x25519_priv_out> <x25519_pub_out> <ed25519_priv_out> <ed25519_pub_out>
+//	encrypt-v2  <recipient_x25519_pub> <sender_ed25519_priv|-> <in> <out_json>
+//	decrypt-v2  <recipient_x25519_priv> <sender_ed25519_pub|-> <in_json> <out>
 //
 // Key files hold the base64(PEM) string used throughout the libraries. Passing
 // "-" as the sender key skips signing (encrypt) or signature verification (decrypt).
@@ -166,6 +169,44 @@ func run(args []string) error {
 			return err
 		}
 		return os.WriteFile(args[2], plaintext, 0o644)
+
+	case "keygen-v2":
+		need(args, 4)
+		xPriv, xPub, err := c.GenerateX25519KeyPair()
+		if err != nil {
+			return err
+		}
+		edPriv, edPub, err := c.GenerateEd25519KeyPair()
+		if err != nil {
+			return err
+		}
+		for i, v := range []string{xPriv, xPub, edPriv, edPub} {
+			if err := os.WriteFile(args[i], []byte(v), 0o600); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case "encrypt-v2":
+		need(args, 4)
+		env, err := c.EncryptPayloadV2(readKey(args[0]), optionalKey(args[1]), readFile(args[2]))
+		if err != nil {
+			return err
+		}
+		data, _ := json.MarshalIndent(env, "", "  ")
+		return os.WriteFile(args[3], data, 0o644)
+
+	case "decrypt-v2":
+		need(args, 4)
+		var env crypto_utils.EnvelopeV2
+		if err := json.Unmarshal(readFile(args[2]), &env); err != nil {
+			return err
+		}
+		plaintext, err := c.DecryptPayloadV2(readKey(args[0]), optionalKey(args[1]), &env)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(args[3], plaintext, 0o644)
 
 	default:
 		return fmt.Errorf("unknown sub-command %q", cmd)

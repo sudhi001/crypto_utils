@@ -382,3 +382,64 @@ func TestEncryptDecryptJSON(t *testing.T) {
 		t.Fatalf("unexpected: %+v", got)
 	}
 }
+
+func TestWithKeysVariantsMatchStringAPI(t *testing.T) {
+	c := crypto_utils.NewCryptoUtils()
+	serverPrivS, serverPubS := mustKeyPair(t)
+	devicePrivS, devicePubS := mustKeyPair(t)
+	serverPriv, _ := c.Base64ToPrivateKey(serverPrivS)
+	serverPub, _ := c.Base64ToPublicKey(serverPubS)
+	devicePriv, _ := c.Base64ToPrivateKey(devicePrivS)
+	devicePub, _ := c.Base64ToPublicKey(devicePubS)
+	payload := []byte("keys variant")
+
+	for _, oaep := range []bool{false, true} {
+		env, err := c.EncryptPayloadWithKeys(serverPub, devicePriv, payload, oaep)
+		if err != nil {
+			t.Fatalf("EncryptPayloadWithKeys oaep=%v: %v", oaep, err)
+		}
+		var got []byte
+		if oaep {
+			got, err = c.DecryptPayloadVerifiedOAEP(serverPrivS, devicePubS, env)
+		} else {
+			got, err = c.DecryptPayloadVerified(serverPrivS, devicePubS, env)
+		}
+		if err != nil || !bytes.Equal(got, payload) {
+			t.Fatalf("string decrypt of keys envelope oaep=%v: %q %v", oaep, got, err)
+		}
+		if oaep {
+			env, err = c.EncryptPayloadSignedOAEP(serverPubS, devicePrivS, payload)
+		} else {
+			env, err = c.EncryptPayloadSigned(serverPubS, devicePrivS, payload)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err = c.DecryptPayloadWithKeys(serverPriv, devicePub, env, oaep)
+		if err != nil || !bytes.Equal(got, payload) {
+			t.Fatalf("keys decrypt of string envelope oaep=%v: %q %v", oaep, got, err)
+		}
+		if _, err := c.DecryptPayloadWithKeys(serverPriv, serverPub, env, oaep); !errors.Is(err, crypto_utils.ErrBadSignature) {
+			t.Fatalf("expected ErrBadSignature, got %v", err)
+		}
+		env, _ = c.EncryptPayloadWithKeys(serverPub, nil, payload, oaep)
+		if env.Signature != "" {
+			t.Fatal("nil signer produced a signature")
+		}
+		if got, err = c.DecryptPayloadWithKeys(serverPriv, nil, env, oaep); err != nil || !bytes.Equal(got, payload) {
+			t.Fatalf("unsigned keys round trip: %v", err)
+		}
+	}
+
+	ct, _ := c.EncryptRSAWithKey(serverPub, payload, false)
+	if pt, err := c.DecryptWithPrivateKey(serverPrivS, ct); err != nil || !bytes.Equal(pt, payload) {
+		t.Fatalf("EncryptRSAWithKey: %v", err)
+	}
+	sig, _ := c.SignWithKey(devicePriv, payload)
+	if ok, err := c.Verify(devicePubS, payload, sig); err != nil || !ok {
+		t.Fatalf("SignWithKey: ok=%v err=%v", ok, err)
+	}
+	if _, err := c.DecryptPayloadWithKeys(serverPriv, nil, nil, false); !errors.Is(err, crypto_utils.ErrMissingField) {
+		t.Fatalf("expected ErrMissingField, got %v", err)
+	}
+}
